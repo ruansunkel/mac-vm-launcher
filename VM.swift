@@ -27,6 +27,7 @@ final class Controller: NSObject, NSApplicationDelegate, NSWindowDelegate, @prec
         }
     }
     func start() async throws {
+        defer { installing = false; window.title = "Mac VM" }
         try manager.createDirectory(at: data, withIntermediateDirectories: true)
         let needsDisk = !exists("Disk.img")
         if needsDisk || exists("Installing") {
@@ -50,14 +51,23 @@ final class Controller: NSObject, NSApplicationDelegate, NSWindowDelegate, @prec
                 defer { try? disk.close() }
                 try disk.truncate(atOffset: 64 * 1024 * 1024 * 1024)
             }
-            vm = try makeVM(cpuCount: max(4, supported.minimumSupportedCPUCount), memorySize: max(8 * 1024 * 1024 * 1024, supported.minimumSupportedMemorySize))
+            let cpuCount = max(4, supported.minimumSupportedCPUCount)
+            let memorySize = max(8 * 1024 * 1024 * 1024, supported.minimumSupportedMemorySize)
+            vm = try makeVM(cpuCount: cpuCount, memorySize: memorySize)
             installing = true
-            defer { installing = false; window.title = "Mac VM" }
             window.title = "Mac VM — Installing macOS, keep this window open…"
             try await VZMacOSInstaller(virtualMachine: vm!, restoringFromImageAt: file("Restore.ipsw")).install()
             try manager.removeItem(at: file("Installing"))
+            // Success arrives before the installer's final shutdown. Let it finish.
+            window.title = "Mac VM — Finishing installation…"
+            while vm!.state != .stopped {
+                guard vm!.state != .error else { throw VMError("The installer VM failed to shut down.") }
+                try await Task.sleep(nanoseconds: 100_000_000)
+            }
+            vm = try makeVM(cpuCount: cpuCount, memorySize: memorySize)
         }
         if vm == nil { vm = try makeVM() }
+        vm!.delegate = self
         let view = VZVirtualMachineView(frame: window.contentView!.bounds)
         view.autoresizingMask = [.width, .height]
         view.virtualMachine = vm
@@ -85,9 +95,13 @@ final class Controller: NSObject, NSApplicationDelegate, NSWindowDelegate, @prec
         config.keyboards = [VZUSBKeyboardConfiguration()]; config.pointingDevices = [VZUSBScreenCoordinatePointingDeviceConfiguration()]
         let sound = VZVirtioSoundDeviceConfiguration(); let output = VZVirtioSoundDeviceOutputStreamConfiguration(); output.sink = VZHostAudioOutputStreamSink(); sound.streams = [output]; config.audioDevices = [sound]
         try config.validate()
-        let machine = VZVirtualMachine(configuration: config); machine.delegate = self; return machine
+        return VZVirtualMachine(configuration: config)
     }
-    func guestDidStop(_ virtualMachine: VZVirtualMachine) { NSApp.terminate(nil) }
+    func guestDidStop(_ virtualMachine: VZVirtualMachine) {
+        // Installer shutdowns and callbacks from before a restart must not quit the app.
+        guard !installing, virtualMachine === vm, virtualMachine.state == .stopped else { return }
+        NSApp.terminate(nil)
+    }
     func virtualMachine(_ virtualMachine: VZVirtualMachine, didStopWithError error: Error) {
         showError(error)
         NSApp.terminate(nil)

@@ -73,6 +73,7 @@ Close the app and run `./build.sh` after changing the source. The build uses loc
 | --- | --- |
 | `VM.swift` | Launcher source |
 | `Info.plist` | App metadata |
+| `AppIcon.icns` | Apple logo app icon |
 | `entitlements.plist` | Virtualization entitlement used when signing |
 | `build.sh` | Creates, compiles, signs, and verifies the app bundle |
 | `Mac VM.app/` | Generated app; can be deleted and rebuilt |
